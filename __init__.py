@@ -45,6 +45,12 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
     def __init__(self, bus=None, skill_id=""):
         super().__init__(bus=bus, skill_id=skill_id)
         self.enrollment_context = {}
+        self.target_samples = 3
+        self.min_audio_duration = 3.0
+        self.max_audio_duration = 10.0
+        self.quality_threshold = 0.7
+        self.confirmation_required = True
+        self.replace_existing_profiles = False
 
     def initialize(self):
         """Initialize skill after construction"""
@@ -910,7 +916,6 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
     def stop(self):
         """Clean up when skill stops"""
         self.clear_enrollment_context()
-        return True
 
     def shutdown(self):
         """Cleanup on shutdown"""
