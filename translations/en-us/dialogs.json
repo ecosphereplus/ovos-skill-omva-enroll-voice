@@ -1,0 +1,37 @@
+{
+    "\\dialog/enrollment_cancelled.dialog": [
+        "No problem! I've cancelled the voice enrollment. You can ask me to enroll your voice anytime.",
+        "Okay, I've stopped the enrollment process. Let me know if you'd like to try again later.",
+        "Voice enrollment cancelled. Feel free to ask me to remember your voice whenever you're ready."
+    ],
+    "\\dialog/enrollment_start_no_name.dialog": [
+        "I'd be happy to help you enroll your voice! This will help me recognize and identify you in the future. Would you like to proceed?",
+        "Great! I can help you set up voice recognition. This will allow me to know when you're speaking. Should we continue?",
+        "Perfect! I'm ready to learn your voice for a more personalized experience. Are you ready to begin?"
+    ],
+    "\\dialog/enrollment_start_with_name.dialog": [
+        "I'd be happy to enroll your voice, {name}! This will help me recognize and identify you in the future. Should I proceed with the enrollment?",
+        "Great! I'll help you enroll your voice as {name}. This will allow me to recognize when you're speaking. Are you ready to continue?",
+        "Perfect, {name}! I'm ready to learn your voice for a more personalized experience. Shall we begin the enrollment process?"
+    ],
+    "\\dialog/name_confirmed.dialog": [
+        "Perfect! I'll use the name {name} for your voice profile.",
+        "Great! Your voice will be registered as {name}.",
+        "Excellent! I've set your name as {name} for voice recognition."
+    ],
+    "\\dialog/name_invalid.dialog": [
+        "I'm sorry, but I couldn't understand that name. Please use only letters, spaces, and common punctuation.",
+        "That doesn't seem like a valid name. Could you please try again with just letters and spaces?",
+        "I need a valid name with only letters. Could you please say your name again?"
+    ],
+    "\\dialog/ready_for_samples.dialog": [
+        "Great {name}! I'm ready to collect {count} voice samples. I'll guide you through each one. Are you ready to begin?",
+        "Perfect! I'll collect {count} voice samples to learn your voice, {name}. Ready to start?",
+        "Excellent {name}! Let's collect {count} voice samples now. I'll tell you what to say for each one."
+    ],
+    "\\dialog/request_name.dialog": [
+        "What name should I use for your voice profile?",
+        "What would you like me to call you?",
+        "Please tell me what name to use for your voice enrollment."
+    ]
+}

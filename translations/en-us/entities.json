@@ -1,0 +1,64 @@
+{
+    "\\vocab/EnrollKeyword.entity": [
+        "enroll",
+        "register",
+        "create",
+        "setup",
+        "set up"
+    ],
+    "\\vocab/MeKeyword.entity": [
+        "me",
+        "myself",
+        "my voice",
+        "my sound"
+    ],
+    "\\vocab/NoKeyword.entity": [
+        "no",
+        "nope",
+        "nah",
+        "never",
+        "not now",
+        "cancel",
+        "stop",
+        "abort",
+        "quit",
+        "exit",
+        "negative",
+        "decline",
+        "refuse",
+        "skip"
+    ],
+    "\\vocab/RememberKeyword.entity": [
+        "remember",
+        "recall",
+        "learn",
+        "save",
+        "store"
+    ],
+    "\\vocab/VoiceKeyword.entity": [
+        "voice",
+        "sound",
+        "audio",
+        "speech",
+        "voice recognition",
+        "voice profile"
+    ],
+    "\\vocab/YesKeyword.entity": [
+        "yes",
+        "yeah",
+        "yep",
+        "sure",
+        "okay",
+        "ok",
+        "absolutely",
+        "definitely",
+        "of course",
+        "go ahead",
+        "proceed",
+        "continue",
+        "affirmative",
+        "correct",
+        "right",
+        "indeed"
+    ]
+}

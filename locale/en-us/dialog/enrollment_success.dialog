@@ -1,0 +1,4 @@
+Success! {name}'s voice has been enrolled with {samples} samples and is ready for identification.
+Perfect! Voice enrollment complete for {name}. I processed {samples} samples and will recognize your voice from now on.
+Excellent! {name} is now enrolled with {samples} voice samples. You're now one of {total_users} enrolled users.
+Great! {name}, your voice profile has been created using {samples} audio samples. Welcome to OMVA!

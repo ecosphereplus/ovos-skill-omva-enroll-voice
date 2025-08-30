@@ -1,0 +1,4 @@
+There are {count} enrolled users: {users}.
+{count} voice profiles are registered for {users}.
+The system has {count} enrolled users: {users}.
+I have voice profiles for {count} users: {users}.

@@ -1,0 +1,52 @@
+{
+    "name": "OMVA Voice Enrollment Settings",
+    "skillMetadata": {
+        "sections": [
+            {
+                "name": "Voice Enrollment Configuration",
+                "fields": [
+                    {
+                        "name": "target_samples",
+                        "type": "number",
+                        "label": "Number of voice samples to collect",
+                        "value": 3,
+                        "placeholder": "3"
+                    },
+                    {
+                        "name": "min_audio_duration",
+                        "type": "number", 
+                        "label": "Minimum audio duration (seconds)",
+                        "value": 3.0,
+                        "placeholder": "3.0"
+                    },
+                    {
+                        "name": "max_audio_duration",
+                        "type": "number",
+                        "label": "Maximum audio duration (seconds)", 
+                        "value": 10.0,
+                        "placeholder": "10.0"
+                    },
+                    {
+                        "name": "quality_threshold",
+                        "type": "number",
+                        "label": "Audio quality threshold (0.0-1.0)",
+                        "value": 0.7,
+                        "placeholder": "0.7"
+                    },
+                    {
+                        "name": "confirmation_required",
+                        "type": "checkbox",
+                        "label": "Require confirmation before enrollment",
+                        "value": true
+                    },
+                    {
+                        "name": "replace_existing_profiles",
+                        "type": "checkbox", 
+                        "label": "Allow replacing existing voice profiles",
+                        "value": false
+                    }
+                ]
+            }
+        ]
+    }
+}

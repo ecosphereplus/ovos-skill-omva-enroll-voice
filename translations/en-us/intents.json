@@ -1,0 +1,29 @@
+{
+    "\\vocab/EnrollVoice.intent": [
+        "enroll my voice",
+        "enroll my voice as {name}",
+        "save my voice",
+        "save my voice as {name}",
+        "remember me",
+        "remember me as {name}",
+        "register my voice",
+        "register my voice as {name}",
+        "learn my voice",
+        "learn my voice as {name}",
+        "setup voice recognition",
+        "setup voice recognition as {name}",
+        "create voice profile",
+        "create voice profile as {name}",
+        "i want to enroll my voice",
+        "i want to save my voice",
+        "i want you to remember me",
+        "can you learn my voice",
+        "can you remember me",
+        "please enroll my voice",
+        "please save my voice",
+        "please remember me",
+        "help me set up voice recognition",
+        "voice enrollment",
+        "voice registration"
+    ]
+}

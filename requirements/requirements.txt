@@ -1,0 +1,10 @@
+# Core OVOS dependencies
+ovos-workshop>=0.0.15
+ovos-utils>=0.0.32
+ovos-bus-client>=0.0.7
+
+# Intent parsing
+adapt-parser>=0.3.4
+
+# Additional utilities
+requests>=2.28.0

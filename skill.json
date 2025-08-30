@@ -1,0 +1,64 @@
+{
+    "title": "OMVA Voice Enrollment",
+    "url": "https://github.com/ecosphereplus/omva-skill-voice-enrollment",
+    "summary": "Natural voice interface for voice enrollment with semantic intent recognition",
+    "short_description": "Voice enrollment skill for OMVA with SpeechBrain integration",
+    "description": "Provides natural voice interface for enrolling user voices with semantic intent recognition supporting phrases like 'enroll my voice', 'save my voice', 'remember me', and other semantically similar expressions. Integrates with SpeechBrain ECAPA-TDNN for voice identification.",
+    "examples": [
+        "Enroll my voice",
+        "Save my voice",
+        "Remember me",
+        "Enroll my voice as John",
+        "Register my voice as Mary Smith",
+        "Learn my voice",
+        "Add my voice to the system",
+        "Set up voice recognition for me"
+    ],
+    "desktopFile": false,
+    "warning": "",
+    "systemDeps": false,
+    "requirements": {
+        "python": [
+            "ovos-workshop>=0.0.15,<4.0.0",
+            "ovos-utils>=0.0.32,<1.0.0",
+            "ovos-bus-client>=0.0.7,<2.0.0",
+            "adapt-parser>=0.3.4",
+            "requests>=2.28.0"
+        ],
+        "system": {},
+        "skill": [
+            "ovos-audio-transformer-plugin-omva-voiceid"
+        ]
+    },
+    "incompatible_skills": [],
+    "platforms": [
+        "i386",
+        "x86_64",
+        "ia64", 
+        "arm64",
+        "arm"
+    ],
+    "branch": "main",
+    "license": "Apache-2.0",
+    "icon": "microphone",
+    "category": "Configuration",
+    "categories": [
+        "Configuration",
+        "Identity",
+        "Voice Recognition"
+    ],
+    "tags": [
+        "voice",
+        "enrollment", 
+        "biometric",
+        "recognition",
+        "speechbrain",
+        "voiceid"
+    ],
+    "credits": [
+        "OMVA Team"
+    ],
+    "skillname": "omva-skill-voice-enrollment",
+    "authorname": "OMVA Team",
+    "foldername": null
+}
