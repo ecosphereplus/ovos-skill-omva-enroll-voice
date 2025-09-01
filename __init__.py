@@ -47,6 +47,7 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
         self.confirmation_required = True
         self.replace_existing_profiles = False
         self.relationship_words = []  # Initialize relationship words list
+        self.locale_patterns = {}  # Initialize locale patterns dictionary
 
         # Timeout configuration
         self.enrollment_timeouts = {
@@ -65,6 +66,131 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
         LOG.info("Initializing OMVA Voice Enrollment Skill")
         self.setup_voice_id_integration()
         self.load_settings()
+        self.load_locale_patterns()
+
+    def load_locale_patterns(self):
+        """Load locale-specific patterns for name extraction"""
+        try:
+            # Get current language/locale
+            lang = self.lang if hasattr(self, "lang") else "en-us"
+            patterns_file = self.find_resource(
+                "patterns/name_extraction.patterns", lang
+            )
+
+            if not patterns_file:
+                LOG.warning(
+                    f"No name extraction patterns found for {lang}, falling back to hardcoded English patterns"
+                )
+                self.use_fallback_patterns()
+                return
+
+            self.locale_patterns = {}
+            with open(patterns_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        if ":" in line:
+                            pattern_type, pattern = line.split(":", 1)
+                            if pattern_type not in self.locale_patterns:
+                                self.locale_patterns[pattern_type] = []
+                            self.locale_patterns[pattern_type].append(pattern.strip())
+
+            LOG.info(
+                f"Loaded locale patterns for {lang}: {len(self.locale_patterns)} pattern types"
+            )
+
+        except Exception as e:
+            LOG.error(f"Error loading locale patterns: {e}")
+            self.use_fallback_patterns()
+
+    def use_fallback_patterns(self):
+        """Use fallback English patterns when locale patterns aren't available"""
+        self.locale_patterns = {
+            "enrollment_action": [
+                "enroll",
+                "register",
+                "save",
+                "learn",
+                "train",
+                "add",
+                "create",
+            ],
+            "possessive": ["my", "our", "the"],
+            "voice_term": ["voice", "voice profile"],
+            "name_intro": ["my name is", "i am", "i'm", "call me"],
+            "name_with_preposition": ["as {name}", "for {name}"],
+            "third_person_action": [
+                "{enrollment_action} {possessive} {relationship}'s {voice_term}"
+            ],
+            "third_person_direct": ["{enrollment_action} {name}'s {voice_term}"],
+            "third_person_with_my": ["my {relationship} {name}"],
+            "third_person_standalone": ["{relationship} {name}"],
+        }
+
+    def build_dynamic_patterns(self):
+        """Build regex patterns from locale-specific templates"""
+        patterns = []
+
+        # Get pattern components
+        enrollment_actions = self.locale_patterns.get("enrollment_action", ["enroll"])
+        possessives = self.locale_patterns.get("possessive", ["my"])
+        voice_terms = self.locale_patterns.get("voice_term", ["voice"])
+        name_intros = self.locale_patterns.get("name_intro", ["my name is"])
+
+        # Build basic name extraction patterns
+        for intro in name_intros:
+            pattern = rf"\b{re.escape(intro)}\s+((?:Dr\.?\s+|Mr\.?\s+|Ms\.?\s+|Mrs\.?\s+|Miss\s+)?[a-zA-Z][a-zA-Z\s\-\'\.{{1,48}}[a-zA-Z])\b"
+            patterns.append(pattern)
+
+        # Build "as [Name]" and "for [Name]" patterns
+        for prep_pattern in self.locale_patterns.get("name_with_preposition", []):
+            if "{name}" in prep_pattern:
+                pattern_template = prep_pattern.replace(
+                    "{name}",
+                    r"((?:Dr\.?\s+|Mr\.?\s+|Ms\.?\s+|Mrs\.?\s+|Miss\s+)?[a-zA-Z][a-zA-Z\s\-\'\.]{1,48}[a-zA-Z])",
+                )
+                pattern = rf"\b{re.escape(pattern_template)}\b".replace(
+                    r"\(", "("
+                ).replace(r"\)", ")")
+                patterns.append(pattern)
+
+        return patterns
+
+    def build_third_person_patterns(self):
+        """Build third-person enrollment patterns from locale templates"""
+        patterns = []
+
+        # Get pattern components
+        enrollment_actions = self.locale_patterns.get("enrollment_action", ["enroll"])
+        possessives = self.locale_patterns.get("possessive", ["my"])
+        voice_terms = self.locale_patterns.get("voice_term", ["voice"])
+
+        # Create dynamic relationship pattern
+        relationship_list = "|".join(
+            re.escape(word) for word in self.relationship_words
+        )
+
+        # Build basic third-person patterns
+        basic_patterns = [
+            # "enroll my [relationship]'s voice"
+            rf"\b(?:{'|'.join(re.escape(action) for action in enrollment_actions)})\s+(?:{'|'.join(re.escape(poss) for poss in possessives)})\s+(\w+)\'?s\s+(?:{'|'.join(re.escape(term) for term in voice_terms)})\b",
+            # "enroll [name]'s voice"
+            rf"\b(?:{'|'.join(re.escape(action) for action in enrollment_actions)})\s+([a-zA-Z][a-zA-Z\s\-\'\.{{1,48}}[a-zA-Z])\'?s\s+(?:{'|'.join(re.escape(term) for term in voice_terms)})\b",
+        ]
+
+        # Build relationship-based patterns
+        for poss in possessives:
+            # "my [relationship] [name]"
+            pattern = rf"\b{re.escape(poss)}\s+(?:{relationship_list})\s+([a-zA-Z][a-zA-Z\s\-\'\.{{1,48}}[a-zA-Z])\b"
+            basic_patterns.append(pattern)
+
+        # "[relationship] [name]"
+        pattern = (
+            rf"\b(?:{relationship_list})\s+([a-zA-Z][a-zA-Z\s\-\'\.{{1,48}}[a-zA-Z])\b"
+        )
+        basic_patterns.append(pattern)
+
+        return basic_patterns
 
     def load_settings(self):
         """Load skill settings with defaults"""
@@ -133,6 +259,11 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
         """Called when skill settings are changed"""
         LOG.info("Settings updated, reloading configuration")
         self.load_settings()
+
+    def on_lang_changed(self, message):
+        """Called when language/locale changes"""
+        LOG.info(f"Language changed, reloading locale patterns")
+        self.load_locale_patterns()
 
     def setup_voice_id_integration(self):
         """Setup integration with voice identification plugin"""
@@ -579,7 +710,7 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
             self.start_sample_collection()
 
     def extract_user_name_from_utterance(self, utterance: str) -> Optional[str]:
-        """Extract user name from utterance using various patterns"""
+        """Extract user name from utterance using locale-aware patterns"""
         if not utterance:
             return None
 
@@ -588,70 +719,50 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
         if third_person_result:
             return third_person_result
 
-        # Pattern 1: "as [Name]" - Enhanced to handle titles
-        as_match = re.search(
+        # Use dynamically built patterns from locale
+        try:
+            patterns = self.build_dynamic_patterns()
+            for pattern in patterns:
+                match = re.search(pattern, utterance, re.IGNORECASE)
+                if match:
+                    name = match.group(1).strip()
+                    cleaned_name = self.clean_name(name)
+                    if self._is_valid_name_with_supported_title(cleaned_name):
+                        LOG.debug(
+                            f"Extracted name using locale pattern: {cleaned_name}"
+                        )
+                        return cleaned_name
+        except Exception as e:
+            LOG.warning(
+                f"Error using locale patterns, falling back to hardcoded patterns: {e}"
+            )
+
+        # Fallback to hardcoded patterns if locale patterns fail
+        return self._extract_name_fallback(utterance)
+
+    def _extract_name_fallback(self, utterance: str) -> Optional[str]:
+        """Fallback name extraction using hardcoded English patterns"""
+        patterns = [
+            # "as [Name]" - Enhanced to handle titles
             r"\bas\s+((?:Dr\.?\s+|Mr\.?\s+|Ms\.?\s+|Mrs\.?\s+|Miss\s+)?[a-zA-Z][a-zA-Z\s\-\'\.]{1,48}[a-zA-Z])\b",
-            utterance,
-            re.IGNORECASE,
-        )
-        if as_match:
-            name = as_match.group(1).strip()
-            cleaned_name = self.clean_name(name)
-            if self._is_valid_name_with_supported_title(cleaned_name):
-                LOG.debug(f"Extracted name using 'as' pattern: {cleaned_name}")
-                return cleaned_name
-
-        # Pattern 2: "for [Name]" - Enhanced to handle titles
-        for_match = re.search(
+            # "for [Name]" - Enhanced to handle titles
             r"\bfor\s+((?:Dr\.?\s+|Mr\.?\s+|Ms\.?\s+|Mrs\.?\s+|Miss\s+)?[a-zA-Z][a-zA-Z\s\-\'\.]{1,48}[a-zA-Z])\b",
-            utterance,
-            re.IGNORECASE,
-        )
-        if for_match:
-            name = for_match.group(1).strip()
-            cleaned_name = self.clean_name(name)
-            if self._is_valid_name_with_supported_title(cleaned_name):
-                LOG.debug(f"Extracted name using 'for' pattern: {cleaned_name}")
-                return cleaned_name
-
-        # Pattern 3: "my name is [Name]"
-        name_is_match = re.search(
+            # "my name is [Name]"
             r"\bmy\s+name\s+is\s+((?:Dr\.?\s+|Mr\.?\s+|Ms\.?\s+|Mrs\.?\s+|Miss\s+)?[a-zA-Z][a-zA-Z\s\-\'\.]{1,48}[a-zA-Z])\b",
-            utterance,
-            re.IGNORECASE,
-        )
-        if name_is_match:
-            name = name_is_match.group(1).strip()
-            cleaned_name = self.clean_name(name)
-            if self._is_valid_name_with_supported_title(cleaned_name):
-                LOG.debug(f"Extracted name using 'my name is' pattern: {cleaned_name}")
-                return cleaned_name
-
-        # Pattern 4: "I'm [Name]" or "I am [Name]"
-        i_am_match = re.search(
+            # "I'm [Name]" or "I am [Name]"
             r"\b(?:i\'?m|i\s+am)\s+((?:Dr\.?\s+|Mr\.?\s+|Ms\.?\s+|Mrs\.?\s+|Miss\s+)?[a-zA-Z][a-zA-Z\s\-\'\.]{1,48}[a-zA-Z])\b",
-            utterance,
-            re.IGNORECASE,
-        )
-        if i_am_match:
-            name = i_am_match.group(1).strip()
-            cleaned_name = self.clean_name(name)
-            if self._is_valid_name_with_supported_title(cleaned_name):
-                LOG.debug(f"Extracted name using 'I am' pattern: {cleaned_name}")
-                return cleaned_name
-
-        # Pattern 5: "call me [Name]"
-        call_me_match = re.search(
+            # "call me [Name]"
             r"\bcall\s+me\s+((?:Dr\.?\s+|Mr\.?\s+|Ms\.?\s+|Mrs\.?\s+|Miss\s+)?[a-zA-Z][a-zA-Z\s\-\'\.]{1,48}[a-zA-Z])\b",
-            utterance,
-            re.IGNORECASE,
-        )
-        if call_me_match:
-            name = call_me_match.group(1).strip()
-            cleaned_name = self.clean_name(name)
-            if self._is_valid_name_with_supported_title(cleaned_name):
-                LOG.debug(f"Extracted name using 'call me' pattern: {cleaned_name}")
-                return cleaned_name
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, utterance, re.IGNORECASE)
+            if match:
+                name = match.group(1).strip()
+                cleaned_name = self.clean_name(name)
+                if self._is_valid_name_with_supported_title(cleaned_name):
+                    LOG.debug(f"Extracted name using fallback pattern: {cleaned_name}")
+                    return cleaned_name
 
         return None
 

@@ -1,0 +1,50 @@
+# Name Extraction Patterns for French (fr-fr)
+# Modèles d'extraction de noms pour le français
+# Format: pattern_type:pattern_template
+
+# Enrollment action words / Mots d'action d'inscription
+enrollment_action:enregistrer
+enrollment_action:sauvegarder
+enrollment_action:inscrire
+enrollment_action:apprendre
+enrollment_action:enseigner
+enrollment_action:capturer
+enrollment_action:stocker
+enrollment_action:ajouter
+enrollment_action:créer
+
+# Possessive determiners / Déterminants possessifs
+possessive:ma
+possessive:mon
+possessive:notre
+possessive:sa
+possessive:son
+possessive:la
+possessive:le
+
+# Voice-related terms / Termes liés à la voix
+voice_term:voix
+voice_term:profil vocal
+voice_term:reconnaissance vocale
+voice_term:empreinte vocale
+
+# Name introduction patterns / Modèles d'introduction de nom
+name_intro:je m'appelle
+name_intro:mon nom est
+name_intro:je suis
+name_intro:appelez-moi
+name_intro:c'est
+name_intro:voici
+
+# Direct name patterns with prepositions / Modèles de nom avec prépositions
+name_with_preposition:comme {name}
+name_with_preposition:pour {name}
+name_with_preposition:de {name}
+
+# Third-person patterns / Modèles de troisième personne
+third_person_possessive:la {voice_term} de {name}
+third_person_with_my:mon {relationship} {name}
+third_person_with_my:ma {relationship} {name}
+third_person_standalone:{relationship} {name}
+third_person_action:{enrollment_action} la {voice_term} de mon {relationship}
+third_person_direct:{enrollment_action} la {voice_term} de {name}

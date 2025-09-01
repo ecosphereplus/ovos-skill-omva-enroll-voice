@@ -1,0 +1,50 @@
+# Name Extraction Patterns for Spanish (es-es)
+# Patrones de extracción de nombres para español
+# Format: pattern_type:pattern_template
+
+# Enrollment action words / Palabras de acción de inscripción
+enrollment_action:registrar
+enrollment_action:guardar
+enrollment_action:inscribir
+enrollment_action:grabar
+enrollment_action:aprender
+enrollment_action:enseñar
+enrollment_action:capturar
+enrollment_action:almacenar
+enrollment_action:añadir
+enrollment_action:crear
+
+# Possessive determiners / Determinantes posesivos
+possessive:mi
+possessive:nuestra
+possessive:nuestro
+possessive:su
+possessive:la
+possessive:el
+
+# Voice-related terms / Términos relacionados con voz
+voice_term:voz
+voice_term:perfil de voz
+voice_term:reconocimiento de voz
+voice_term:huella de voz
+
+# Name introduction patterns / Patrones de introducción de nombre
+name_intro:mi nombre es
+name_intro:me llamo
+name_intro:soy
+name_intro:dime
+name_intro:llámame
+name_intro:este es
+name_intro:esta es
+
+# Direct name patterns with prepositions / Patrones de nombre con preposiciones
+name_with_preposition:como {name}
+name_with_preposition:para {name}
+name_with_preposition:de {name}
+
+# Third-person patterns / Patrones de tercera persona
+third_person_possessive:{name} de {voice_term}
+third_person_with_my:mi {relationship} {name}
+third_person_standalone:{relationship} {name}
+third_person_action:{enrollment_action} {possessive} {relationship} de {voice_term}
+third_person_direct:{enrollment_action} la {voice_term} de {name}

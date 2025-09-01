@@ -1,0 +1,47 @@
+# Name Extraction Patterns for English (en-us)
+# These patterns are used for extracting names from voice enrollment requests
+# Format: pattern_type:pattern_template
+
+# Enrollment action words
+enrollment_action:enroll
+enrollment_action:register
+enrollment_action:save
+enrollment_action:learn
+enrollment_action:train
+enrollment_action:teach
+enrollment_action:capture
+enrollment_action:record
+enrollment_action:store
+enrollment_action:setup
+enrollment_action:add
+enrollment_action:create
+
+# Possessive determiners
+possessive:my
+possessive:our
+possessive:the
+
+# Voice-related terms
+voice_term:voice
+voice_term:voice profile
+voice_term:voice recognition
+voice_term:voice print
+
+# Name introduction patterns
+name_intro:my name is
+name_intro:i am
+name_intro:i'm
+name_intro:call me
+name_intro:they call me
+name_intro:this is
+
+# Direct name patterns with prepositions
+name_with_preposition:as {name}
+name_with_preposition:for {name}
+
+# Third-person patterns
+third_person_possessive:{name}'s {voice_term}
+third_person_with_my:my {relationship} {name}
+third_person_standalone:{relationship} {name}
+third_person_action:{enrollment_action} {possessive} {relationship}'s {voice_term}
+third_person_direct:{enrollment_action} {name}'s {voice_term}
