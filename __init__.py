@@ -9,9 +9,7 @@ Copyright 2024 OMVA Team
 Licensed under the Apache License, Version 2.0
 """
 
-import os
 import re
-import tempfile
 import uuid
 from datetime import datetime
 from typing import Any, Dict, Optional
@@ -46,11 +44,19 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
         super().__init__(bus=bus, skill_id=skill_id)
         self.enrollment_context = {}
         self.target_samples = 3
-        self.min_audio_duration = 3.0
-        self.max_audio_duration = 10.0
-        self.quality_threshold = 0.7
         self.confirmation_required = True
         self.replace_existing_profiles = False
+
+        # Timeout configuration
+        self.enrollment_timeouts = {
+            "confirmation": 30,  # Wait for user confirmation
+            "sample_collection": 15,  # Wait for each sample
+            "between_samples": 10,  # Wait between samples
+            "overall_session": 600,  # Total enrollment session (10 minutes)
+            "processing": 30,  # Wait for plugin processing
+            "retry_confirmation": 30,  # Wait for retry confirmation
+        }
+        self.active_timers = {}  # Track active timeout timers
 
     def initialize(self):
         """Initialize skill after construction"""
@@ -61,9 +67,6 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
     def load_settings(self):
         """Load skill settings with defaults"""
         self.target_samples = self.settings.get("target_samples", 3)
-        self.min_audio_duration = self.settings.get("min_audio_duration", 3.0)
-        self.max_audio_duration = self.settings.get("max_audio_duration", 10.0)
-        self.quality_threshold = self.settings.get("quality_threshold", 0.7)
         self.confirmation_required = self.settings.get("confirmation_required", True)
         self.replace_existing_profiles = self.settings.get(
             "replace_existing_profiles", False
@@ -78,11 +81,10 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
         if hasattr(self, "_bus") and self._bus is not None:
             self.bus.on("ovos.voiceid.enroll.response", self.handle_enrollment_response)
             self.bus.on("ovos.voiceid.users.response", self.handle_users_response)
+            self.bus.on(MessageBusEvents.SAMPLE_COLLECTED, self.handle_sample_collected)
             LOG.debug("Voice ID integration setup complete")
         else:
-            LOG.debug(
-                "Bus not available during initialization - will set up integration later"
-            )
+            LOG.debug("Bus not available during initialization")
 
     # Primary Intent Handlers
 
@@ -185,11 +187,26 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
             self.remove_context("AwaitingUserName")
             self.enrollment_context["user_name"] = user_name
             self.enrollment_context["state"] = "sample_collection"
+            self.enrollment_context["samples"] = []
+            self.enrollment_context["current_sample_index"] = 0
+
+            # Notify VoiceID plugin about enrollment session start
+            if hasattr(self, "_bus") and self._bus is not None:
+                self.bus.emit(
+                    Message(
+                        MessageBusEvents.START_ENROLLMENT,
+                        {
+                            "session_id": self.enrollment_context.get("session_id"),
+                            "user_id": self.enrollment_context["user_name"],
+                            "target_samples": self.enrollment_context["target_samples"],
+                            "timestamp": datetime.now().isoformat(),
+                        },
+                    )
+                )
+
             self.speak_dialog("name_confirmed", {"name": user_name})
-            self.speak_dialog(
-                "ready_for_samples",
-                {"name": user_name, "count": self.enrollment_context["target_samples"]},
-            )
+            # Start sample collection immediately after name confirmation
+            self.start_sample_collection()
         else:
             LOG.warning(f"Invalid name provided: {user_name}")
             self.speak_dialog("name_invalid")
@@ -219,11 +236,14 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
                 pattern, "", cleaned_utterance, flags=re.IGNORECASE
             )
 
-        # Pattern 2: Extract name from common patterns
+        # Pattern 2: Extract name from common patterns - Enhanced with title support
         name_patterns = [
-            r"as\s+([a-zA-Z][a-zA-Z\s\-\']{1,48}[a-zA-Z])",  # Check "as NAME" first
-            r"name\s+([a-zA-Z][a-zA-Z\s\-\']{1,48}[a-zA-Z])",  # Then "name NAME"
-            r"^([a-zA-Z][a-zA-Z\s\-\']{1,48}[a-zA-Z])$",  # Finally direct name
+            # Check "as NAME" first - with title support
+            r"as\s+((?:Dr\.?\s+|Mr\.?\s+|Ms\.?\s+|Mrs\.?\s+|Miss\s+)?[a-zA-Z][a-zA-Z\s\-\'\.]{1,48}[a-zA-Z])",
+            # Then "name NAME" - with title support
+            r"name\s+((?:Dr\.?\s+|Mr\.?\s+|Ms\.?\s+|Mrs\.?\s+|Miss\s+)?[a-zA-Z][a-zA-Z\s\-\'\.]{1,48}[a-zA-Z])",
+            # Finally direct name - with title support
+            r"^((?:Dr\.?\s+|Mr\.?\s+|Ms\.?\s+|Mrs\.?\s+|Miss\s+)?[a-zA-Z][a-zA-Z\s\-\'\.]{1,48}[a-zA-Z])$",
         ]
 
         for pattern in name_patterns:
@@ -296,12 +316,60 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
         # Remove extra whitespace
         name = re.sub(r"\s+", " ", name.strip())
 
+        # Check if this contains unsupported titles that should be rejected
+        unsupported_titles = [
+            "professor",
+            "captain",
+            "sergeant",
+            "lieutenant",
+            "colonel",
+            "general",
+            "admiral",
+        ]
+        first_word = name.split()[0].lower().rstrip(".")
+        if first_word in unsupported_titles:
+            # Return the original name as-is, but the calling function should handle validation
+            pass
+
         # Handle special cases for proper capitalization
         parts = []
         for word in name.split():
-            if "-" in word:
+            # Handle titles specially
+            if word.lower() in [
+                "dr",
+                "dr.",
+                "mr",
+                "mr.",
+                "ms",
+                "ms.",
+                "mrs",
+                "mrs.",
+                "miss",
+            ]:
+                if word.lower() in ["dr", "dr."]:
+                    parts.append("Dr.")
+                elif word.lower() in ["mr", "mr."]:
+                    parts.append("Mr.")
+                elif word.lower() in ["ms", "ms."]:
+                    parts.append("Ms.")
+                elif word.lower() in ["mrs", "mrs."]:
+                    parts.append("Mrs.")
+                elif word.lower() == "miss":
+                    parts.append("Miss")
+            elif "-" in word:
                 # Handle hyphenated names like Jean-Luc
                 parts.append("-".join(part.capitalize() for part in word.split("-")))
+            elif "'" in word:
+                # Handle apostrophes like O'Connor
+                apostrophe_parts = word.split("'")
+                formatted_parts = []
+                for i, part in enumerate(apostrophe_parts):
+                    if i == 0:
+                        formatted_parts.append(part.capitalize())
+                    else:
+                        # Capitalize after apostrophe
+                        formatted_parts.append(part.capitalize())
+                parts.append("'".join(formatted_parts))
             else:
                 parts.append(word.capitalize())
 
@@ -319,6 +387,21 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
             self.enrollment_context["state"] = "sample_collection"
             self.enrollment_context["samples"] = []
             self.enrollment_context["current_sample_index"] = 0
+
+            # Notify VoiceID plugin about enrollment session start
+            if hasattr(self, "_bus") and self._bus is not None:
+                self.bus.emit(
+                    Message(
+                        MessageBusEvents.START_ENROLLMENT,
+                        {
+                            "session_id": self.enrollment_context.get("session_id"),
+                            "user_id": self.enrollment_context["user_name"],
+                            "target_samples": self.enrollment_context["target_samples"],
+                            "timestamp": datetime.now().isoformat(),
+                        },
+                    )
+                )
+
             self.speak_dialog(
                 "ready_for_samples",
                 {
@@ -326,6 +409,7 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
                     "count": self.enrollment_context["target_samples"],
                 },
             )
+            # Start sample collection immediately - no need for extra confirmation
             self.start_sample_collection()
 
     def extract_user_name_from_utterance(self, utterance: str) -> Optional[str]:
@@ -333,33 +417,108 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
         if not utterance:
             return None
 
-        # Pattern 1: "as [Name]"
+        # Pattern 1: "as [Name]" - Enhanced to handle titles
         as_match = re.search(
-            r"\bas\s+([a-zA-Z][a-zA-Z\s\-\']{1,48}[a-zA-Z])\b", utterance, re.IGNORECASE
+            r"\bas\s+((?:Dr\.?\s+|Mr\.?\s+|Ms\.?\s+|Mrs\.?\s+|Miss\s+)?[a-zA-Z][a-zA-Z\s\-\'\.]{1,48}[a-zA-Z])\b",
+            utterance,
+            re.IGNORECASE,
         )
         if as_match:
             name = as_match.group(1).strip()
-            LOG.debug(f"Extracted name using 'as' pattern: {name}")
-            return name
+            cleaned_name = self.clean_name(name)
+            if self._is_valid_name_with_supported_title(cleaned_name):
+                LOG.debug(f"Extracted name using 'as' pattern: {cleaned_name}")
+                return cleaned_name
 
-        # Pattern 2: "for [Name]"
+        # Pattern 2: "for [Name]" - Enhanced to handle titles
         for_match = re.search(
-            r"\bfor\s+([a-zA-Z][a-zA-Z\s\-\']{1,48}[a-zA-Z])\b",
+            r"\bfor\s+((?:Dr\.?\s+|Mr\.?\s+|Ms\.?\s+|Mrs\.?\s+|Miss\s+)?[a-zA-Z][a-zA-Z\s\-\'\.]{1,48}[a-zA-Z])\b",
             utterance,
             re.IGNORECASE,
         )
         if for_match:
             name = for_match.group(1).strip()
-            LOG.debug(f"Extracted name using 'for' pattern: {name}")
-            return name
+            cleaned_name = self.clean_name(name)
+            if self._is_valid_name_with_supported_title(cleaned_name):
+                LOG.debug(f"Extracted name using 'for' pattern: {cleaned_name}")
+                return cleaned_name
+
+        # Pattern 3: "my name is [Name]"
+        name_is_match = re.search(
+            r"\bmy\s+name\s+is\s+((?:Dr\.?\s+|Mr\.?\s+|Ms\.?\s+|Mrs\.?\s+|Miss\s+)?[a-zA-Z][a-zA-Z\s\-\'\.]{1,48}[a-zA-Z])\b",
+            utterance,
+            re.IGNORECASE,
+        )
+        if name_is_match:
+            name = name_is_match.group(1).strip()
+            cleaned_name = self.clean_name(name)
+            if self._is_valid_name_with_supported_title(cleaned_name):
+                LOG.debug(f"Extracted name using 'my name is' pattern: {cleaned_name}")
+                return cleaned_name
+
+        # Pattern 4: "I'm [Name]" or "I am [Name]"
+        i_am_match = re.search(
+            r"\b(?:i\'?m|i\s+am)\s+((?:Dr\.?\s+|Mr\.?\s+|Ms\.?\s+|Mrs\.?\s+|Miss\s+)?[a-zA-Z][a-zA-Z\s\-\'\.]{1,48}[a-zA-Z])\b",
+            utterance,
+            re.IGNORECASE,
+        )
+        if i_am_match:
+            name = i_am_match.group(1).strip()
+            cleaned_name = self.clean_name(name)
+            if self._is_valid_name_with_supported_title(cleaned_name):
+                LOG.debug(f"Extracted name using 'I am' pattern: {cleaned_name}")
+                return cleaned_name
+
+        # Pattern 5: "call me [Name]"
+        call_me_match = re.search(
+            r"\bcall\s+me\s+((?:Dr\.?\s+|Mr\.?\s+|Ms\.?\s+|Mrs\.?\s+|Miss\s+)?[a-zA-Z][a-zA-Z\s\-\'\.]{1,48}[a-zA-Z])\b",
+            utterance,
+            re.IGNORECASE,
+        )
+        if call_me_match:
+            name = call_me_match.group(1).strip()
+            cleaned_name = self.clean_name(name)
+            if self._is_valid_name_with_supported_title(cleaned_name):
+                LOG.debug(f"Extracted name using 'call me' pattern: {cleaned_name}")
+                return cleaned_name
 
         return None
+
+    def _is_valid_name_with_supported_title(self, name: str) -> bool:
+        """Check if name contains only supported titles or no title"""
+        if not name:
+            return False
+
+        # List of supported titles
+        supported_titles = ["dr.", "mr.", "ms.", "mrs.", "miss"]
+
+        # List of unsupported titles that should be rejected
+        unsupported_titles = [
+            "professor",
+            "captain",
+            "sergeant",
+            "lieutenant",
+            "colonel",
+            "general",
+            "admiral",
+        ]
+
+        first_word = name.split()[0].lower().rstrip(".")
+
+        # If it starts with an unsupported title, reject it
+        if first_word in unsupported_titles:
+            return False
+
+        return True
 
     def start_enrollment_flow(self, user_name: Optional[str], trigger: str = "unknown"):
         """Start the voice enrollment flow"""
         LOG.info(
             f"Starting enrollment flow - user_name: {user_name}, trigger: {trigger}"
         )
+
+        # Cancel any existing timeouts first
+        self.cancel_all_enrollment_timeouts()
 
         self.enrollment_context = {
             "state": "confirmation",
@@ -368,7 +527,15 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
             "samples_collected": 0,
             "target_samples": self.target_samples,
             "started_at": datetime.now().isoformat(),
+            "session_id": str(uuid.uuid4())[:8],  # Short session ID for logging
         }
+
+        # Set overall session timeout
+        self.set_enrollment_timeout(
+            "overall_session",
+            self.enrollment_timeouts["overall_session"],
+            self.handle_session_timeout,
+        )
 
         if user_name:
             self.speak_dialog("enrollment_start_with_name", {"name": user_name})
@@ -378,9 +545,15 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
         # Request confirmation if enabled in settings
         if self.confirmation_required:
             self.set_context("AwaitingEnrollmentConfirmation")
+            # Set confirmation timeout
+            self.set_enrollment_timeout(
+                "confirmation",
+                self.enrollment_timeouts["confirmation"],
+                self.handle_confirmation_timeout,
+            )
         else:
-            # Skip confirmation and proceed directly
-            self.proceed_with_enrollment()
+            # Skip confirmation and proceed directly, but add brief pause for better UX
+            self.schedule_event(self.proceed_with_enrollment, 0.5)
 
     def start_sample_collection(self):
         """Start collecting voice samples"""
@@ -393,6 +566,16 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
 
         sample_index = self.enrollment_context["current_sample_index"]
         phrase = SAMPLE_PHRASES[sample_index % len(SAMPLE_PHRASES)]
+
+        # For the first sample, provide context about what we're doing
+        if sample_index == 0:
+            self.speak_dialog(
+                "ready_for_samples",
+                {
+                    "name": self.enrollment_context["user_name"],
+                    "count": self.enrollment_context["target_samples"],
+                },
+            )
 
         self.speak_dialog(
             "sample_prompt",
@@ -408,48 +591,46 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
         self.enrollment_context["current_phrase"] = phrase
         self.enrollment_context["recording_start_time"] = datetime.now().isoformat()
 
-        # Start recording after a brief pause
-        self.schedule_event(self.start_recording, 2.0, data={"phrase": phrase})
+        # Set sample timeout
+        timeout_duration = self.enrollment_timeouts.get("sample_collection", 15)
+        self.set_enrollment_timeout(
+            "sample_collection", timeout_duration, self.handle_sample_timeout
+        )
+
+        # Start recording immediately for a smooth experience
+        self.schedule_event(self.start_recording, 1.0, data={"phrase": phrase})
 
     def start_recording(self, message):
-        """Start audio recording for voice sample"""
+        """Notify VoiceID plugin to start collecting voice sample"""
         phrase = message.data.get("phrase", "")
         sample_id = str(uuid.uuid4())
 
         LOG.info(
-            f"Starting recording for sample {self.enrollment_context['current_sample_index'] + 1}"
+            f"Requesting voice sample {self.enrollment_context['current_sample_index'] + 1}: {phrase}"
         )
 
-        # Create temporary file for recording
-        temp_dir = tempfile.gettempdir()
-        audio_file = os.path.join(temp_dir, f"omva_sample_{sample_id}.wav")
-
-        # Send message to start recording
-        recording_data = {
-            "sample_id": sample_id,
-            "audio_file": audio_file,
-            "phrase": phrase,
-            "max_duration": self.max_audio_duration,
-            "min_duration": self.min_audio_duration,
-        }
-
-        if hasattr(self, "_bus") and self._bus is not None:
-            self.bus.emit(Message("mycroft.mic.listen", recording_data))
-
-        # Store recording info in context
+        # Store recording info in context for tracking
         self.enrollment_context["current_recording"] = {
             "sample_id": sample_id,
-            "audio_file": audio_file,
             "phrase": phrase,
             "start_time": datetime.now().isoformat(),
         }
 
-        # Set timeout for recording
-        self.schedule_event(
-            self.stop_recording_timeout,
-            self.max_audio_duration + 1.0,
-            data={"sample_id": sample_id},
-        )
+        # Notify VoiceID plugin to start collecting this specific sample
+        if hasattr(self, "_bus") and self._bus is not None:
+            self.bus.emit(
+                Message(
+                    MessageBusEvents.COLLECT_SAMPLE,
+                    {
+                        "session_id": self.enrollment_context.get("session_id"),
+                        "sample_id": sample_id,
+                        "phrase": phrase,
+                        "sample_number": self.enrollment_context["current_sample_index"]
+                        + 1,
+                        "total_samples": self.enrollment_context["target_samples"],
+                    },
+                )
+            )
 
     def stop_recording_timeout(self, message):
         """Handle recording timeout"""
@@ -457,7 +638,7 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
         current_recording = self.enrollment_context.get("current_recording", {})
 
         if current_recording.get("sample_id") == sample_id:
-            LOG.warning("Recording timed out")
+            LOG.warning("Sample collection timed out")
             self.speak_dialog("recording_timeout")
             self.retry_current_sample()
 
@@ -472,140 +653,75 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
         self.stop_current_recording()
 
     def stop_current_recording(self):
-        """Stop the current recording and process it"""
+        """Request VoiceID plugin to stop current sample collection"""
         current_recording = self.enrollment_context.get("current_recording")
         if not current_recording:
             return
 
-        LOG.info("Stopping current recording")
+        LOG.info("Requesting VoiceID plugin to stop current sample collection")
 
-        # Send stop recording message
+        # Request plugin to stop collecting current sample
         if hasattr(self, "_bus") and self._bus is not None:
-            self.bus.emit(Message("mycroft.mic.stop"))
-
-        # Process the recorded sample
-        self.process_audio_sample(current_recording)
+            self.bus.emit(
+                Message(
+                    MessageBusEvents.STOP_SAMPLE_COLLECTION,
+                    {
+                        "session_id": self.enrollment_context.get("session_id"),
+                        "sample_id": current_recording.get("sample_id"),
+                    },
+                )
+            )
+        # Plugin will send sample.collected message when ready
 
     def process_audio_sample(self, recording_info: Dict[str, Any]):
-        """Process recorded audio sample"""
-        audio_file = recording_info["audio_file"]
+        """Process recorded audio sample - simplified as plugin handles audio processing"""
         phrase = recording_info["phrase"]
         sample_id = recording_info["sample_id"]
 
-        if not os.path.exists(audio_file):
-            LOG.error(f"Audio file not found: {audio_file}")
-            self.speak_dialog("recording_failed")
-            self.retry_current_sample()
-            return
+        # Store basic sample metadata (plugin will handle actual audio processing)
+        sample_data = {
+            "sample_id": sample_id,
+            "phrase": phrase,
+            "recorded_at": recording_info["start_time"],
+        }
 
-        # Validate audio quality
-        quality_score = self.validate_audio_quality(audio_file, phrase)
+        self.enrollment_context["samples"].append(sample_data)
+        self.enrollment_context["current_sample_index"] += 1
 
-        if quality_score >= self.quality_threshold:
-            # Good quality sample
-            sample_data = {
-                "sample_id": sample_id,
-                "audio_file": audio_file,
-                "phrase": phrase,
-                "quality_score": quality_score,
-                "duration": self.get_audio_duration(audio_file),
-                "recorded_at": recording_info["start_time"],
-            }
+        LOG.info(
+            f"Sample {len(self.enrollment_context['samples'])} recorded for phrase: {phrase}"
+        )
 
-            self.enrollment_context["samples"].append(sample_data)
-            self.enrollment_context["current_sample_index"] += 1
+        # Cancel sample timeout since we got a sample
+        self.cancel_enrollment_timeout("sample_collection")
 
-            LOG.info(
-                f"Sample {len(self.enrollment_context['samples'])} recorded successfully"
-            )
-            self.speak_dialog(
-                "sample_accepted",
-                {
-                    "number": len(self.enrollment_context["samples"]),
-                    "total": self.enrollment_context["target_samples"],
-                },
-            )
+        current_sample_num = len(self.enrollment_context["samples"])
+        target_samples = self.enrollment_context["target_samples"]
 
-            # Remove recording context and continue
-            self.remove_context("AwaitingSample")
-            self.enrollment_context.pop("current_recording", None)
+        self.speak_dialog(
+            "sample_accepted",
+            {
+                "number": current_sample_num,
+                "total": target_samples,
+            },
+        )
 
-            # Continue with next sample or finish
-            self.schedule_event(self.start_sample_collection, 1.0)
+        # Remove recording context and continue
+        self.remove_context("AwaitingSample")
+        self.enrollment_context.pop("current_recording", None)
 
+        # Provide smooth transition to next sample or completion
+        if current_sample_num < target_samples:
+            # More samples needed - start next one with brief pause for UX
+            self.schedule_event(self.start_sample_collection, 1.5)
         else:
-            # Poor quality sample
-            LOG.warning(f"Poor audio quality: {quality_score}")
-            self.speak_dialog("sample_quality_poor")
-            self.retry_current_sample()
-
-    def validate_audio_quality(self, audio_file: str, expected_phrase: str) -> float:
-        """Validate audio quality and content"""
-        try:
-            # Check file size (basic quality check)
-            if not os.path.exists(audio_file):
-                return 0.0
-
-            file_size = os.path.getsize(audio_file)
-            if file_size < 1000:  # Too small (less than 1KB)
-                return 0.2
-
-            # Check duration
-            duration = self.get_audio_duration(audio_file)
-            if duration < self.min_audio_duration:
-                return 0.3
-            if duration > self.max_audio_duration:
-                return 0.4
-
-            # Basic quality score based on duration and file size
-            duration_score = min(
-                1.0,
-                (duration - self.min_audio_duration)
-                / (self.max_audio_duration - self.min_audio_duration),
-            )
-            size_score = min(1.0, file_size / 50000)  # Normalize to ~50KB
-
-            base_score = (duration_score + size_score) / 2
-
-            # Add some randomness to simulate more sophisticated quality checks
-            import random
-
-            quality_variance = random.uniform(-0.1, 0.1)
-            final_score = max(0.0, min(1.0, base_score + quality_variance))
-
-            LOG.debug(
-                f"Audio quality score: {final_score} (duration: {duration}s, size: {file_size}B)"
-            )
-            return final_score
-
-        except Exception as e:
-            LOG.error(f"Error validating audio quality: {e}")
-            return 0.1
-
-    def get_audio_duration(self, audio_file: str) -> float:
-        """Get audio file duration in seconds"""
-        try:
-            # Simple duration estimation based on file size
-            # In real implementation, would use audio library like librosa
-            file_size = os.path.getsize(audio_file)
-            # Rough estimate: 16kHz, 16-bit mono = ~32KB per second
-            estimated_duration = file_size / 32000
-            return max(0.1, estimated_duration)
-        except Exception as e:
-            LOG.error(f"Error getting audio duration: {e}")
-            return 0.0
+            # All samples collected - proceed to completion
+            self.schedule_event(self.finish_sample_collection, 1.0)
 
     def retry_current_sample(self):
         """Retry recording current sample"""
-        # Clean up failed recording
-        current_recording = self.enrollment_context.get("current_recording")
-        if current_recording:
-            audio_file = current_recording.get("audio_file")
-            if audio_file and os.path.exists(audio_file):
-                try:
-                    os.remove(audio_file)
-                except Exception as e:
-                    LOG.warning(f"Could not remove failed recording: {e}")
+        # Cancel any active sample timeout
+        self.cancel_enrollment_timeout("sample_collection")
 
         # Reset recording state
         self.enrollment_context.pop("current_recording", None)
@@ -613,6 +729,12 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
         # Ask if user wants to try again
         self.speak_dialog("retry_sample")
         self.set_context("AwaitingRetryConfirmation")
+
+        # Set retry confirmation timeout
+        timeout_duration = self.enrollment_timeouts.get("retry_confirmation", 30)
+        self.set_enrollment_timeout(
+            "retry_confirmation", timeout_duration, self.handle_retry_timeout
+        )
 
     @intent_handler(
         IntentBuilder("RetryYes")
@@ -622,6 +744,7 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
     )
     def handle_retry_yes(self, message):
         """Handle retry confirmation - yes"""
+        self.cancel_enrollment_timeout("retry_confirmation")
         self.remove_context("AwaitingRetryConfirmation")
         self.start_sample_collection()
 
@@ -633,9 +756,69 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
     )
     def handle_retry_no(self, message):
         """Handle retry confirmation - no"""
+        self.cancel_enrollment_timeout("retry_confirmation")
         self.remove_context("AwaitingRetryConfirmation")
         self.speak_dialog("enrollment_cancelled")
-        self.clear_enrollment_context()
+        self.reset_enrollment_context()
+
+    @intent_handler(
+        IntentBuilder("TimeoutContinue")
+        .require("ContinueKeyword")
+        .require("AwaitingTimeoutConfirmation")
+        .build()
+    )
+    def handle_timeout_continue(self, message):
+        """Handle continue response to timeout confirmation"""
+        self.cancel_enrollment_timeout("timeout_confirmation")
+        self.remove_context("AwaitingTimeoutConfirmation")
+        timeout_type = self.enrollment_context.get("timeout_type", "")
+
+        if timeout_type == "sample_final":
+            # Continue with next sample or complete enrollment
+            self.speak_dialog("timeout_continuing_samples")
+            # "Continuing with enrollment. Let's try the next sample."
+            self.skip_to_next_sample_or_complete()
+        elif timeout_type == "session_final":
+            # Reset session timeout and continue
+            self.speak_dialog("timeout_continuing_session")
+            # "Continuing enrollment. I've reset the session timer."
+            # Reset the session timeout for another full duration
+            session_timeout = self.enrollment_timeouts.get("overall_session", 600)
+            self.set_enrollment_timeout(
+                "overall_session", session_timeout, self.handle_session_timeout
+            )
+
+    @intent_handler(
+        IntentBuilder("TimeoutAbort")
+        .require("AbortKeyword")
+        .require("AwaitingTimeoutConfirmation")
+        .build()
+    )
+    def handle_timeout_abort(self, message):
+        """Handle abort response to timeout confirmation"""
+        self.cancel_enrollment_timeout("timeout_confirmation")
+        self.remove_context("AwaitingTimeoutConfirmation")
+        timeout_type = self.enrollment_context.get("timeout_type", "")
+
+        if timeout_type == "sample_final":
+            self.speak_dialog("enrollment_aborted_by_user")
+            # "Enrollment aborted as requested."
+        elif timeout_type == "session_final":
+            self.speak_dialog("enrollment_session_aborted")
+            # "Enrollment session aborted as requested."
+            # Notify plugin to clean up
+            if hasattr(self, "_bus") and self._bus is not None:
+                self.bus.emit(
+                    Message(
+                        MessageBusEvents.SESSION_EXPIRED,
+                        {
+                            "session_id": self.enrollment_context.get("session_id"),
+                            "user_name": self.enrollment_context.get("user_name"),
+                        },
+                    )
+                )
+
+        self.reset_enrollment_context()
 
     def finish_sample_collection(self):
         """Complete sample collection and proceed to processing"""
@@ -653,7 +836,7 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
         self.send_samples_for_processing()
 
     def send_samples_for_processing(self):
-        """Send collected samples to voice identification plugin for processing"""
+        """Send enrollment request to voice identification plugin for processing"""
         user_name = self.enrollment_context.get("user_name")
         samples = self.enrollment_context.get("samples", [])
 
@@ -664,37 +847,13 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
             )
             return
 
-        # Convert audio files to hex-encoded format required by plugin
-        audio_samples_hex = []
-        for sample in samples:
-            audio_file = sample["audio_file"]
-            try:
-                if os.path.exists(audio_file):
-                    with open(audio_file, "rb") as f:
-                        audio_data = f.read()
-                        audio_hex = audio_data.hex()
-                        audio_samples_hex.append(audio_hex)
-                        LOG.debug(
-                            f"Converted audio sample to hex: {len(audio_hex)} chars"
-                        )
-                else:
-                    LOG.warning(f"Audio file not found: {audio_file}")
-            except Exception as e:
-                LOG.error(f"Failed to read audio file {audio_file}: {e}")
-                continue
-
-        if not audio_samples_hex:
-            LOG.error("No valid audio samples could be converted")
-            self.handle_enrollment_failed(
-                ErrorCodes.PROCESSING_FAILED, "No valid audio samples"
-            )
-            return
-
         enrollment_id = str(uuid.uuid4())
         enrollment_data = {
-            "user_id": user_name,  # Plugin expects 'user_id', not 'user_name'
-            "audio_samples": audio_samples_hex,  # Hex-encoded audio data
+            "user_id": user_name,  # Plugin expects 'user_id'
+            "session_id": self.enrollment_context.get("session_id"),
             "enrollment_id": enrollment_id,
+            "sample_count": len(samples),
+            "sample_phrases": [sample["phrase"] for sample in samples],
             "timestamp": datetime.now().isoformat(),
         }
 
@@ -702,10 +861,11 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
         self.enrollment_context["enrollment_id"] = enrollment_id
 
         LOG.info(
-            f"Sending {len(audio_samples_hex)} hex-encoded samples for processing: {user_name}"
+            f"Requesting VoiceID plugin to process {len(samples)} samples for user: {user_name}"
         )
 
-        # Send to voice identification plugin
+        # Send enrollment request to voice identification plugin
+        # Plugin will handle all audio processing from its audio transformer
         if hasattr(self, "_bus") and self._bus is not None:
             self.bus.emit(Message(MessageBusEvents.ENROLL_USER, enrollment_data))
 
@@ -757,8 +917,7 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
                     },
                 )
 
-            self.cleanup_enrollment_files()
-            self.clear_enrollment_context()
+            self.reset_enrollment_context()
             LOG.info(f"Enrollment completed successfully for {user_id}")
         else:
             # Handle error response
@@ -825,6 +984,31 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
             if hasattr(self, "_bus") and self._bus is not None:
                 self.speak_dialog("error_checking_users")
 
+    def handle_sample_collected(self, message):
+        """Handle notification from VoiceID plugin that a sample has been collected"""
+        LOG.info(f"Received sample collected notification: {message.data}")
+
+        sample_data = message.data
+        sample_id = sample_data.get("sample_id")
+        quality_ok = sample_data.get("quality_ok", True)
+
+        # Verify this is for our current enrollment session
+        current_recording = self.enrollment_context.get("current_recording", {})
+        if current_recording.get("sample_id") != sample_id:
+            LOG.warning(
+                f"Received sample notification for unknown sample_id: {sample_id}"
+            )
+            return
+
+        if quality_ok:
+            # Process the successful sample
+            self.process_audio_sample(current_recording)
+        else:
+            # Sample quality was poor, retry
+            LOG.warning("VoiceID plugin reported poor sample quality")
+            self.speak_dialog("sample_quality_poor")
+            self.retry_current_sample()
+
     def handle_processing_timeout(self, message):
         """Handle processing timeout"""
         enrollment_id = message.data.get("enrollment_id")
@@ -864,8 +1048,6 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
             self.speak_dialog("ask_try_again")
             self.set_context("AwaitingRetryEnrollment")
 
-        self.cleanup_enrollment_files()
-
     @intent_handler(
         IntentBuilder("TryAgainYes")
         .require("YesKeyword")
@@ -890,32 +1072,203 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
         self.speak_dialog("enrollment_cancelled")
         self.clear_enrollment_context()
 
-    def cleanup_enrollment_files(self):
-        """Clean up temporary files from enrollment process"""
-        samples = self.enrollment_context.get("samples", [])
-
-        for sample in samples:
-            audio_file = sample.get("audio_file")
-            if audio_file and os.path.exists(audio_file):
-                try:
-                    os.remove(audio_file)
-                    LOG.debug(f"Removed temporary file: {audio_file}")
-                except Exception as e:
-                    LOG.warning(f"Could not remove file {audio_file}: {e}")
-
-        # Also clean up any current recording
-        current_recording = self.enrollment_context.get("current_recording")
-        if current_recording:
-            audio_file = current_recording.get("audio_file")
-            if audio_file and os.path.exists(audio_file):
-                try:
-                    os.remove(audio_file)
-                except Exception as e:
-                    LOG.warning(f"Could not remove recording file {audio_file}: {e}")
-
     def stop(self):
         """Clean up when skill stops"""
+        self.cancel_all_enrollment_timeouts()
         self.clear_enrollment_context()
+
+    # ==========================================
+    # TIMEOUT MANAGEMENT METHODS
+    # ==========================================
+
+    def set_enrollment_timeout(self, timeout_type: str, duration: int, callback):
+        """Set a timeout with automatic cleanup"""
+        # Cancel existing timer of this type
+        self.cancel_enrollment_timeout(timeout_type)
+
+        # Set new timer
+        timer_id = self.schedule_event(callback, duration)
+        self.active_timers[timeout_type] = timer_id
+
+        LOG.debug(f"Set {timeout_type} timeout for {duration} seconds")
+
+    def cancel_enrollment_timeout(self, timeout_type: str):
+        """Cancel a specific timeout"""
+        if timeout_type in self.active_timers:
+            timer_id = self.active_timers.pop(timeout_type)
+            self.cancel_scheduled_event(timer_id)
+            LOG.debug(f"Cancelled {timeout_type} timeout")
+
+    def cancel_all_enrollment_timeouts(self):
+        """Cancel all active enrollment timeouts"""
+        for timeout_type in list(self.active_timers.keys()):
+            self.cancel_enrollment_timeout(timeout_type)
+        LOG.debug("Cancelled all enrollment timeouts")
+
+    # ==========================================
+    # TIMEOUT HANDLERS
+    # ==========================================
+
+    def handle_confirmation_timeout(self, message=None):
+        """Handle timeout when waiting for user confirmation"""
+        retry_count = self.enrollment_context.get("confirmation_retry_count", 0)
+
+        if retry_count < 2:  # Allow 2 retries
+            self.speak_dialog("enrollment_timeout_confirmation")
+            # "I didn't hear a response. Would you like to enroll your voice? Say yes or no."
+            self.enrollment_context["confirmation_retry_count"] = retry_count + 1
+            self.set_enrollment_timeout(
+                "confirmation", 30, self.handle_confirmation_timeout
+            )
+        else:
+            self.speak_dialog("enrollment_cancelled_timeout")
+            # "Enrollment cancelled due to no response."
+            self.reset_enrollment_context()
+
+    def handle_sample_timeout(self, message=None):
+        """Handle timeout during sample collection"""
+        sample_retry_count = self.enrollment_context.get("sample_retry_count", 0)
+        current_phrase = self.enrollment_context.get("current_phrase", "")
+
+        if sample_retry_count < 2:  # Allow 2 retries per sample
+            if sample_retry_count == 0:
+                self.speak_dialog("sample_timeout_first", {"phrase": current_phrase})
+            else:
+                self.speak_dialog("sample_timeout_second", {"phrase": current_phrase})
+
+            self.enrollment_context["sample_retry_count"] = sample_retry_count + 1
+            self.restart_current_sample()
+        else:
+            # Ask for confirmation before skipping/aborting
+            self.speak_dialog("sample_timeout_confirm_abort")
+            # "Having trouble with that sample. Should I continue with enrollment or abort? Say continue or abort."
+            self.set_context("AwaitingTimeoutConfirmation")
+            self.enrollment_context["timeout_type"] = "sample_final"
+            timeout_duration = self.enrollment_timeouts.get("retry_confirmation", 30)
+            self.set_enrollment_timeout(
+                "timeout_confirmation",
+                timeout_duration,
+                self.handle_timeout_confirmation_timeout,
+            )
+
+    def handle_session_timeout(self, message=None):
+        """Handle overall enrollment session timeout"""
+        # Ask for confirmation before expiring the session
+        self.speak_dialog("session_timeout_confirm_abort")
+        # "Your enrollment session is about to expire. Should I continue or abort enrollment? Say continue or abort."
+        self.set_context("AwaitingTimeoutConfirmation")
+        self.enrollment_context["timeout_type"] = "session_final"
+        timeout_duration = self.enrollment_timeouts.get("retry_confirmation", 30)
+        self.set_enrollment_timeout(
+            "timeout_confirmation",
+            timeout_duration,
+            self.handle_timeout_confirmation_timeout,
+        )
+
+    def handle_retry_timeout(self, message=None):
+        """Handle timeout on retry confirmation"""
+        self.speak_dialog("enrollment_cancelled_timeout")
+        # "Enrollment cancelled due to no response."
+        self.reset_enrollment_context()
+
+    def handle_timeout_confirmation_timeout(self, message=None):
+        """Handle timeout when user doesn't respond to abort/continue confirmation"""
+        # If no response to abort/continue, treat as abort
+        timeout_type = self.enrollment_context.get("timeout_type", "")
+        self.remove_context("AwaitingTimeoutConfirmation")
+
+        if timeout_type == "sample_final":
+            self.speak_dialog("enrollment_cancelled_no_response")
+            # "No response received. Enrollment cancelled."
+        elif timeout_type == "session_final":
+            self.speak_dialog("enrollment_session_expired")
+            # "Session expired. Enrollment cancelled."
+            # Notify plugin to clean up
+            if hasattr(self, "_bus") and self._bus is not None:
+                self.bus.emit(
+                    Message(
+                        MessageBusEvents.SESSION_EXPIRED,
+                        {
+                            "session_id": self.enrollment_context.get("session_id"),
+                            "user_name": self.enrollment_context.get("user_name"),
+                        },
+                    )
+                )
+
+        self.reset_enrollment_context()
+
+    # ==========================================
+    # TIMEOUT RECOVERY METHODS
+    # ==========================================
+
+    def restart_current_sample(self):
+        """Restart collection of current sample after timeout"""
+        current_phrase = self.enrollment_context.get("current_phrase", "")
+        if current_phrase:
+            # Restart sample collection with same phrase
+            self.set_enrollment_timeout(
+                "sample_collection",
+                self.enrollment_timeouts["sample_collection"],
+                self.handle_sample_timeout,
+            )
+            LOG.debug(f"Restarted sample collection for phrase: {current_phrase}")
+        else:
+            # Fallback to normal sample collection flow
+            self.start_sample_collection()
+
+    def skip_to_next_sample_or_complete(self):
+        """Skip current sample and move to next or complete enrollment"""
+        current_sample = self.enrollment_context.get("current_sample_index", 0)
+        target_samples = self.enrollment_context.get("target_samples", 3)
+        collected_samples = len(self.enrollment_context.get("samples", []))
+
+        if collected_samples >= 2:  # Have at least 2 samples, can complete
+            self.speak_dialog("enrollment_completing_partial")
+            # "Completing enrollment with the samples we have."
+            self.finish_sample_collection()
+        elif current_sample + 1 < target_samples:
+            # Move to next sample
+            self.enrollment_context["current_sample_index"] = current_sample + 1
+            self.enrollment_context["sample_retry_count"] = 0  # Reset retry count
+            self.start_sample_collection()
+        else:
+            # No more samples and insufficient collected
+            self.speak_dialog("enrollment_insufficient_samples")
+            # "Not enough voice samples collected. Let's try again."
+            self.offer_retry()
+
+    def offer_retry(self):
+        """Offer user option to retry enrollment"""
+        self.speak_dialog("ask_try_again")
+        # "Would you like to try enrolling your voice again? Say yes or no."
+        self.set_context("AwaitingRetryConfirmation")
+        self.set_enrollment_timeout("retry_confirmation", 30, self.handle_retry_timeout)
+
+    def pause_enrollment(self):
+        """Pause enrollment for user to resume later"""
+        self.speak_dialog("enrollment_paused")
+        # "Enrollment paused. Say 'continue enrollment' or 'enroll my voice' to resume."
+
+        # Store partial progress
+        self.enrollment_context["state"] = "paused"
+        self.enrollment_context["paused_at"] = datetime.now().isoformat()
+
+        # Set long-term timeout for paused state (1 hour)
+        self.set_enrollment_timeout(
+            "paused_session", 3600, self.expire_paused_enrollment
+        )
+
+    def expire_paused_enrollment(self, message=None):
+        """Expire a paused enrollment after timeout"""
+        self.speak_dialog("paused_enrollment_expired")
+        # "Your paused enrollment has expired. Please start over."
+        self.reset_enrollment_context()
+
+    def reset_enrollment_context(self):
+        """Reset enrollment context and cancel all timeouts"""
+        self.cancel_all_enrollment_timeouts()
+        self.clear_enrollment_context()
+        LOG.info("Enrollment context reset due to timeout or cancellation")
 
     def shutdown(self):
         """Cleanup on shutdown"""
