@@ -44,6 +44,13 @@
                         "type": "checkbox", 
                         "label": "Allow replacing existing voice profiles",
                         "value": false
+                    },
+                    {
+                        "name": "relationship_words",
+                        "type": "text",
+                        "label": "Relationship words for third-person enrollment (comma-separated)",
+                        "value": "son,daughter,wife,husband,brother,sister,mother,father,mom,dad,kid,child,parent,grandson,granddaughter,grandfather,grandmother,grandpa,grandma,uncle,aunt,cousin,nephew,niece,friend,partner,roommate,colleague",
+                        "placeholder": "son,daughter,wife,husband..."
                     }
                 ]
             }

@@ -46,6 +46,7 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
         self.target_samples = 3
         self.confirmation_required = True
         self.replace_existing_profiles = False
+        self.relationship_words = []  # Initialize relationship words list
 
         # Timeout configuration
         self.enrollment_timeouts = {
@@ -55,6 +56,7 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
             "overall_session": 600,  # Total enrollment session (10 minutes)
             "processing": 30,  # Wait for plugin processing
             "retry_confirmation": 30,  # Wait for retry confirmation
+            "name_collection": 30,  # Wait for third-person name collection
         }
         self.active_timers = {}  # Track active timeout timers
 
@@ -71,9 +73,66 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
         self.replace_existing_profiles = self.settings.get(
             "replace_existing_profiles", False
         )
-        LOG.info(
-            f"Settings loaded: {self.target_samples} samples, confirmation: {self.confirmation_required}"
+
+        # Load configurable relationship words for third-person enrollment
+        default_relationships = [
+            "son",
+            "daughter",
+            "wife",
+            "husband",
+            "brother",
+            "sister",
+            "mother",
+            "father",
+            "mom",
+            "dad",
+            "kid",
+            "child",
+            "parent",
+            "grandson",
+            "granddaughter",
+            "grandfather",
+            "grandmother",
+            "grandpa",
+            "grandma",
+            "uncle",
+            "aunt",
+            "cousin",
+            "nephew",
+            "niece",
+            "friend",
+            "partner",
+            "roommate",
+            "colleague",
+        ]
+
+        relationship_setting = self.settings.get(
+            "relationship_words", default_relationships
         )
+
+        # Handle both list format (from code) and comma-separated string (from UI)
+        if isinstance(relationship_setting, str):
+            self.relationship_words = [
+                word.strip().lower()
+                for word in relationship_setting.split(",")
+                if word.strip()
+            ]
+        elif isinstance(relationship_setting, list):
+            self.relationship_words = [
+                word.lower() for word in relationship_setting if word
+            ]
+        else:
+            self.relationship_words = default_relationships
+
+        LOG.info(
+            f"Settings loaded: {self.target_samples} samples, confirmation: {self.confirmation_required}, "
+            f"relationship_words: {len(self.relationship_words)} terms"
+        )
+
+    def settings_changed_callback(self):
+        """Called when skill settings are changed"""
+        LOG.info("Settings updated, reloading configuration")
+        self.load_settings()
 
     def setup_voice_id_integration(self):
         """Setup integration with voice identification plugin"""
@@ -149,6 +208,66 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
         self.remove_context("AwaitingEnrollmentConfirmation")
         self.speak_dialog("enrollment_cancelled")
         self.clear_enrollment_context()
+
+    # Third-Person Name Collection Intent Handlers
+
+    @intent_handler(
+        IntentBuilder("ThirdPersonNameProvided")
+        .require("AwaitingThirdPersonName")
+        .build()
+    )
+    def handle_third_person_name_provided(self, message):
+        """Handle name provided for third-person enrollment"""
+        utterance = message.data.get("utterance", "")
+        LOG.info(f"Processing third-person name from utterance: {utterance}")
+
+        # Extract name from the utterance using existing patterns
+        extracted_name = None
+
+        # Try standard name extraction patterns
+        for pattern in [
+            r"(?:their name is|his name is|her name is)\s+([a-zA-Z][a-zA-Z\s\-\'\.]{1,48}[a-zA-Z])",
+            r"(?:it's|its)\s+([a-zA-Z][a-zA-Z\s\-\'\.]{1,48}[a-zA-Z])",
+            r"^([a-zA-Z][a-zA-Z\s\-\'\.]{1,48}[a-zA-Z])$",  # Just a name
+        ]:
+            match = re.search(pattern, utterance.strip(), re.IGNORECASE)
+            if match:
+                extracted_name = match.group(1).strip()
+                break
+
+        if extracted_name:
+            cleaned_name = self.clean_name(extracted_name)
+            if self._is_valid_name_with_supported_title(cleaned_name):
+                # Confirm the name and proceed
+                self.enrollment_context["user_name"] = cleaned_name
+                self.enrollment_context["state"] = "confirmation"
+                self.remove_context("AwaitingThirdPersonName")
+
+                # Confirm the third-person enrollment
+                self.speak_dialog("name_confirmed", {"name": cleaned_name})
+                self.speak_dialog("third_person_ready", {"name": cleaned_name})
+
+                # Proceed with enrollment or confirmation
+                if self.confirmation_required:
+                    self.set_context("AwaitingEnrollmentConfirmation")
+                    self.set_enrollment_timeout(
+                        "confirmation",
+                        self.enrollment_timeouts["confirmation"],
+                        self.handle_confirmation_timeout,
+                    )
+                else:
+                    self.proceed_with_enrollment()
+                return
+
+        # Invalid or no name provided
+        self.speak_dialog("name_invalid")
+        relationship = self.enrollment_context.get("relationship", "someone else")
+        self.speak_dialog("third_person_enrollment", {"relationship": relationship})
+
+        # Reset timeout
+        self.set_enrollment_timeout(
+            "name_collection", 30, self.handle_name_collection_timeout
+        )
 
     # Voice Profile Management Intent Handlers
 
@@ -464,6 +583,11 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
         if not utterance:
             return None
 
+        # First check for third-person enrollment patterns
+        third_person_result = self.extract_third_person_name(utterance)
+        if third_person_result:
+            return third_person_result
+
         # Pattern 1: "as [Name]" - Enhanced to handle titles
         as_match = re.search(
             r"\bas\s+((?:Dr\.?\s+|Mr\.?\s+|Ms\.?\s+|Mrs\.?\s+|Miss\s+)?[a-zA-Z][a-zA-Z\s\-\'\.]{1,48}[a-zA-Z])\b",
@@ -531,6 +655,71 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
 
         return None
 
+    def extract_third_person_name(self, utterance: str) -> Optional[str]:
+        """Extract name from third-person enrollment patterns"""
+        if not utterance:
+            return None
+
+        # Create dynamic relationship pattern based on configured words
+        relationship_list = "|".join(
+            re.escape(word) for word in self.relationship_words
+        )
+
+        # Family/relationship patterns with dynamic relationship words
+        basic_patterns = [
+            # "enroll my [relationship]'s voice"
+            r"\benroll\s+my\s+(\w+)\'?s\s+voice\b",
+            # "register my [relationship]'s voice"
+            r"\bregister\s+my\s+(\w+)\'?s\s+voice\b",
+            # "enroll [name]'s voice"
+            r"\benroll\s+([a-zA-Z][a-zA-Z\s\-\'\.]{1,48}[a-zA-Z])\'?s\s+voice\b",
+            # "register [name]'s voice"
+            r"\bregister\s+([a-zA-Z][a-zA-Z\s\-\'\.]{1,48}[a-zA-Z])\'?s\s+voice\b",
+        ]
+
+        # Dynamic patterns built with relationship words
+        dynamic_patterns = [
+            # "my [relationship] [name]"
+            r"\bmy\s+(?:"
+            + relationship_list
+            + r")\s+([a-zA-Z][a-zA-Z\s\-\'\.]{1,48}[a-zA-Z])\b",
+            # "[relationship] [name]"
+            r"\b(?:"
+            + relationship_list
+            + r")\s+([a-zA-Z][a-zA-Z\s\-\'\.]{1,48}[a-zA-Z])\b",
+        ]
+
+        relationship_patterns = basic_patterns + dynamic_patterns
+
+        for pattern in relationship_patterns:
+            match = re.search(pattern, utterance, re.IGNORECASE)
+            if match:
+                extracted = match.group(1).strip()
+
+                # Check if it's a relationship word (needs name collection)
+                if extracted.lower() in self.relationship_words:
+                    # Mark this as a third-person scenario requiring name collection
+                    self.enrollment_context = getattr(self, "enrollment_context", {})
+                    self.enrollment_context["third_person"] = True
+                    self.enrollment_context["relationship"] = extracted.lower()
+                    LOG.debug(
+                        f"Detected third-person enrollment for relationship: {extracted}"
+                    )
+                    return None  # Will prompt for actual name
+                else:
+                    # It's an actual name
+                    cleaned_name = self.clean_name(extracted)
+                    if self._is_valid_name_with_supported_title(cleaned_name):
+                        # Mark as third-person but with known name
+                        self.enrollment_context = getattr(
+                            self, "enrollment_context", {}
+                        )
+                        self.enrollment_context["third_person"] = True
+                        LOG.debug(f"Extracted third-person name: {cleaned_name}")
+                        return cleaned_name
+
+        return None
+
     def _is_valid_name_with_supported_title(self, name: str) -> bool:
         """Check if name contains only supported titles or no title"""
         if not name:
@@ -567,15 +756,30 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
         # Cancel any existing timeouts first
         self.cancel_all_enrollment_timeouts()
 
-        self.enrollment_context = {
-            "state": "confirmation",
-            "user_name": user_name,
-            "trigger": trigger,
-            "samples_collected": 0,
-            "target_samples": self.target_samples,
-            "started_at": datetime.now().isoformat(),
-            "session_id": str(uuid.uuid4())[:8],  # Short session ID for logging
-        }
+        # Initialize enrollment context
+        if not hasattr(self, "enrollment_context") or not self.enrollment_context:
+            self.enrollment_context = {}
+
+        # Check if this is a third-person enrollment scenario
+        is_third_person = self.enrollment_context.get("third_person", False)
+        relationship = self.enrollment_context.get("relationship")
+
+        # Update enrollment context
+        self.enrollment_context.update(
+            {
+                "state": (
+                    "confirmation"
+                    if not is_third_person or user_name
+                    else "name_collection"
+                ),
+                "user_name": user_name,
+                "trigger": trigger,
+                "samples_collected": 0,
+                "target_samples": self.target_samples,
+                "started_at": datetime.now().isoformat(),
+                "session_id": str(uuid.uuid4())[:8],  # Short session ID for logging
+            }
+        )
 
         # Set overall session timeout
         self.set_enrollment_timeout(
@@ -584,9 +788,33 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
             self.handle_session_timeout,
         )
 
-        if user_name:
+        # Handle third-person enrollment scenarios
+        if is_third_person and not user_name:
+            # Need to collect the actual name for third-person enrollment
+            if relationship:
+                self.speak_dialog(
+                    "third_person_enrollment", {"relationship": relationship}
+                )
+            else:
+                self.speak_dialog(
+                    "third_person_enrollment", {"relationship": "someone else"}
+                )
+
+            self.set_context("AwaitingThirdPersonName")
+            self.set_enrollment_timeout(
+                "name_collection",
+                self.enrollment_timeouts.get("name_collection", 30),
+                self.handle_name_collection_timeout,
+            )
+            return
+        elif is_third_person and user_name:
+            # Third-person enrollment with name already provided
+            self.speak_dialog("third_person_ready", {"name": user_name})
+        elif user_name:
+            # Regular enrollment with name provided
             self.speak_dialog("enrollment_start_with_name", {"name": user_name})
         else:
+            # Regular enrollment without name
             self.speak_dialog("enrollment_start_no_name")
 
         # Request confirmation if enabled in settings
@@ -1421,6 +1649,22 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
         else:
             self.speak_dialog("enrollment_cancelled_timeout")
             # "Enrollment cancelled due to no response."
+            self.reset_enrollment_context()
+
+    def handle_name_collection_timeout(self, message=None):
+        """Handle timeout when waiting for third-person name"""
+        retry_count = self.enrollment_context.get("name_collection_retry_count", 0)
+
+        if retry_count < 2:  # Allow 2 retries
+            relationship = self.enrollment_context.get("relationship", "someone else")
+            self.speak_dialog("ask_try_again")
+            self.speak_dialog("third_person_enrollment", {"relationship": relationship})
+            self.enrollment_context["name_collection_retry_count"] = retry_count + 1
+            self.set_enrollment_timeout(
+                "name_collection", 30, self.handle_name_collection_timeout
+            )
+        else:
+            self.speak_dialog("enrollment_cancelled")
             self.reset_enrollment_context()
 
     def handle_sample_timeout(self, message=None):
