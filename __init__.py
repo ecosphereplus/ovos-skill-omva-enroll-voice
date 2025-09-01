@@ -179,7 +179,54 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
     )
     def handle_collect_user_name(self, message):
         """Handle name input during enrollment"""
-        utterance = message.data.get("utterance", "")
+        utterance = message.data.get("utterance", "").lower()
+
+        # Check for restart/change name requests
+        restart_phrases = [
+            "restart",
+            "start over",
+            "start again",
+            "begin again",
+            "restart enrollment",
+            "change name",
+            "different name",
+            "wrong name",
+            "use different name",
+            "that's wrong",
+            "that's not right",
+            "not that name",
+        ]
+
+        if any(phrase in utterance for phrase in restart_phrases):
+            LOG.info(f"User requested name change/restart: {utterance}")
+            self.remove_context("AwaitingUserName")
+            self.speak_dialog("name_change_requested")
+            # Restart name collection
+            self.set_context("AwaitingUserName")
+            return
+
+        # Check for abort/cancel during name collection
+        abort_phrases = [
+            "cancel",
+            "stop",
+            "abort",
+            "quit",
+            "exit",
+            "nevermind",
+            "never mind",
+            "forget it",
+            "not now",
+            "no thanks",
+            "i changed my mind",
+        ]
+
+        if any(phrase in utterance for phrase in abort_phrases):
+            LOG.info(f"User aborted during name collection: {utterance}")
+            self.remove_context("AwaitingUserName")
+            self.speak_dialog("enrollment_cancelled")
+            self.cleanup_enrollment_session()
+            return
+
         user_name = self.extract_name_from_utterance_flexible(utterance)
 
         if user_name and self.validate_user_name(user_name):
@@ -652,6 +699,162 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
         """Handle stop recording command"""
         self.stop_current_recording()
 
+    @intent_handler(
+        IntentBuilder("StopEnrollment")
+        .one_of("StopKeyword", "AbortKeyword", "NoKeyword")
+        .build()
+    )
+    def handle_stop_enrollment(self, message):
+        """Handle general stop/abort commands during any enrollment phase"""
+        if not self.enrollment_context or self.get_enrollment_state() == "idle":
+            return False  # Not in enrollment, ignore
+
+        utterance = message.data.get("utterance", "").lower()
+
+        # More specific patterns for enrollment cancellation
+        enrollment_stop_phrases = [
+            "stop enrollment",
+            "cancel enrollment",
+            "abort enrollment",
+            "stop this",
+            "cancel this",
+            "quit enrollment",
+            "end enrollment",
+            "i want to stop",
+            "i want to cancel",
+            "i don't want to continue",
+        ]
+
+        # Check if this is clearly an enrollment abort
+        if any(phrase in utterance for phrase in enrollment_stop_phrases) or any(
+            word in utterance.split()
+            for word in ["stop", "cancel", "abort", "quit", "nevermind"]
+        ):
+            LOG.info(f"User requested enrollment abort: {utterance}")
+            self.speak_dialog("enrollment_cancelled")
+            self.cleanup_enrollment_session()
+            return True  # Consumed the utterance
+
+        return False  # Let other handlers process
+
+    @intent_handler(
+        IntentBuilder("RestartEnrollment").require("RestartKeyword").build()
+    )
+    def handle_restart_enrollment(self, message):
+        """Handle restart enrollment requests during any phase"""
+        if not self.enrollment_context or self.get_enrollment_state() == "idle":
+            return False  # Not in enrollment, ignore
+
+        LOG.info("User requested enrollment restart")
+
+        # Extract new name if provided
+        utterance = message.data.get("utterance", "")
+        new_name = self.extract_user_name_from_utterance(utterance)
+
+        # Clean up current session
+        self.cleanup_enrollment_session()
+
+        # Start fresh enrollment flow
+        if new_name:
+            LOG.info(f"Restarting enrollment with new name: {new_name}")
+            self.start_enrollment_flow(new_name, trigger="restart_with_name")
+        else:
+            LOG.info("Restarting enrollment - will prompt for name")
+            self.speak_dialog("enrollment_restarted")
+            self.start_enrollment_flow(None, trigger="restart_no_name")
+
+    @intent_handler(
+        IntentBuilder("EnrollAsDifferentUser")
+        .require("EnrollKeyword")
+        .optionally("VoiceKeyword")
+        .optionally("MeKeyword")
+        .require("UserName")
+        .build()
+    )
+    def handle_enroll_as_different_user(self, message):
+        """Handle enrollment requests with new name during active enrollment"""
+        if not self.enrollment_context or self.get_enrollment_state() == "idle":
+            # Not in enrollment, treat as new enrollment
+            return self.handle_enroll_voice_adapt_intent(message)
+
+        new_name = message.data.get("UserName")
+        if new_name:
+            LOG.info(f"User wants to restart enrollment as: {new_name}")
+
+            current_name = self.enrollment_context.get("user_name")
+            if current_name and current_name.lower() != new_name.lower():
+                # Different name - provide context about the switch
+                self.speak_dialog("name_switched", {"new_name": new_name})
+
+            # Clean up current session
+            self.cleanup_enrollment_session()
+
+            # Start fresh with new name
+            self.start_enrollment_flow(new_name, trigger="restart_different_user")
+            return True
+
+        return False
+
+    @intent_handler(
+        IntentBuilder("ChangeName").one_of("RestartKeyword", "NoKeyword").build()
+    )
+    def handle_change_name_request(self, message):
+        """Handle requests to change name during enrollment"""
+        if not self.enrollment_context or self.get_enrollment_state() == "idle":
+            return False  # Not in enrollment, ignore
+
+        utterance = message.data.get("utterance", "").lower()
+
+        # Patterns that indicate user wants to change/correct the name
+        name_change_patterns = [
+            "wrong name",
+            "different name",
+            "change name",
+            "not that name",
+            "that's wrong",
+            "that's not right",
+            "use different name",
+            "call me",
+            "my name is",
+            "i am",
+            "actually i'm",
+            "no my name is",
+        ]
+
+        if any(pattern in utterance for pattern in name_change_patterns):
+            LOG.info(f"User wants to change name: {utterance}")
+
+            # Check if they provided a new name in the same utterance
+            new_name = self.extract_user_name_from_utterance(
+                message.data.get("utterance", "")
+            )
+
+            if new_name and self.validate_user_name(new_name):
+                # Direct name change with new name provided
+                LOG.info(f"Changing name to: {new_name}")
+                old_name = self.enrollment_context.get("user_name", "previous")
+
+                # Update enrollment context
+                self.enrollment_context["user_name"] = new_name
+
+                # If we were already collecting samples, restart with new name
+                if self.enrollment_context.get("state") == "sample_collection":
+                    self.cleanup_enrollment_session()
+                    self.start_enrollment_flow(new_name, trigger="name_corrected")
+                else:
+                    # Just update the name and continue
+                    self.speak_dialog("name_confirmed", {"name": new_name})
+                    self.proceed_with_enrollment()
+            else:
+                # No new name provided, prompt for it
+                self.speak_dialog("name_change_requested")
+                self.enrollment_context["state"] = "name_collection"
+                self.set_context("AwaitingUserName")
+
+            return True  # Consumed the utterance
+
+        return False
+
     def stop_current_recording(self):
         """Request VoiceID plugin to stop current sample collection"""
         current_recording = self.enrollment_context.get("current_recording")
@@ -1070,6 +1273,101 @@ class OMVAVoiceEnrollmentSkill(OVOSSkill):
         """Handle try again confirmation - no"""
         self.remove_context("AwaitingRetryEnrollment")
         self.speak_dialog("enrollment_cancelled")
+        self.clear_enrollment_context()
+
+    def converse(self, message=None):
+        """Handle conversational context during enrollment - intercept global stops"""
+        if not self.enrollment_context or self.get_enrollment_state() == "idle":
+            return False  # Not in enrollment, let other skills handle
+
+        utterance = (
+            message.data.get("utterances", [""])[0].lower()
+            if message and message.data.get("utterances")
+            else ""
+        )
+
+        # Check for global abort/stop intents during enrollment
+        abort_patterns = [
+            "stop",
+            "cancel",
+            "quit",
+            "abort",
+            "exit",
+            "nevermind",
+            "never mind",
+            "forget it",
+            "not now",
+            "end this",
+            "stop enrollment",
+            "cancel enrollment",
+        ]
+
+        # Check for restart/change name requests during enrollment
+        restart_patterns = [
+            "restart",
+            "start over",
+            "start again",
+            "begin again",
+            "restart enrollment",
+            "change name",
+            "different name",
+            "wrong name",
+            "use different name",
+            "that's wrong",
+            "that's not right",
+            "not that name",
+            "enroll as",
+            "i want to restart",
+            "let me restart",
+            "can i restart",
+        ]
+
+        if any(pattern in utterance for pattern in restart_patterns):
+            LOG.info(f"User requested enrollment restart: {utterance}")
+
+            # Extract new name if provided
+            new_name = self.extract_user_name_from_utterance(utterance)
+
+            # Clean up current session
+            self.cleanup_enrollment_session()
+
+            # Start fresh enrollment
+            if new_name:
+                LOG.info(f"Restarting enrollment with new name: {new_name}")
+                self.start_enrollment_flow(new_name, trigger="restart_with_name")
+            else:
+                self.speak_dialog("enrollment_restarted")
+                self.start_enrollment_flow(None, trigger="restart_no_name")
+            return True  # Consumed the utterance
+
+        if any(pattern in utterance for pattern in abort_patterns):
+            LOG.info(f"Global abort detected during enrollment: {utterance}")
+            self.speak_dialog("enrollment_cancelled")
+            self.cleanup_enrollment_session()
+            return True  # Consumed the utterance
+
+        return False  # Let normal intent handling continue
+
+    def cleanup_enrollment_session(self):
+        """Clean up enrollment session and notify plugin"""
+        # Notify plugin to stop any ongoing sample collection
+        if self.enrollment_context.get("current_recording"):
+            self.stop_current_recording()
+
+        # Notify plugin of session termination
+        if hasattr(self, "_bus") and self._bus is not None:
+            self.bus.emit(
+                Message(
+                    MessageBusEvents.SESSION_EXPIRED,
+                    {
+                        "session_id": self.enrollment_context.get("session_id"),
+                        "user_name": self.enrollment_context.get("user_name"),
+                        "reason": "user_abort",
+                    },
+                )
+            )
+
+        self.cancel_all_enrollment_timeouts()
         self.clear_enrollment_context()
 
     def stop(self):

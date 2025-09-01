@@ -13,13 +13,46 @@ setup voice recognition as {name}
 create voice profile
 create voice profile as {name}
 i want to enroll my voice
+i want to enroll my voice as {name}
 i want to save my voice
+i want to save my voice as {name}
 i want you to remember me
+i want you to remember me as {name}
 can you learn my voice
+can you learn my voice as {name}
 can you remember me
+can you remember me as {name}
 please enroll my voice
+please enroll my voice as {name}
 please save my voice
+please save my voice as {name}
 please remember me
+please remember me as {name}
 help me set up voice recognition
+help me set up voice recognition as {name}
 voice enrollment
 voice registration
+add my voice
+add my voice as {name}
+train on my voice
+train on my voice as {name}
+teach you my voice
+teach you my voice as {name}
+recognize my voice
+recognize my voice as {name}
+identify my voice
+identify my voice as {name}
+store my voice
+store my voice as {name}
+capture my voice
+capture my voice as {name}
+record my voice profile
+record my voice profile as {name}
+enroll voice
+enroll voice as {name}
+voice setup
+voice setup as {name}
+my name is {name}
+i am {name}
+call me {name}
+i'm {name}
